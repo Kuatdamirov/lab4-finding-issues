@@ -1,19 +1,26 @@
 from flask import Flask, request, jsonify
-import base64, pickle, yaml
+import os, json, logging
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 
-# 1) ВКЛЮЧЕН debug -> стек-трейсы утекут наружу
-app.config["DEBUG"] = True
+# Прод-режим: без подробных ошибок наружу
+app.config["DEBUG"] = False
 
-# 2) Жёстко прошитый секрет в коде
-SECRET_KEY = "sk_live_ABC123_super_secret"
+# Секреты только из окружения (а не из git)
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-not-set")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+API_TOKEN   = os.getenv("API_TOKEN", "")
 
-# 2) Чтение конфигурации с секретами, файл хранится в репозитории
-with open("config.yml", "r", encoding="utf-8") as f:
-    cfg = yaml.safe_load(f)
-DB_PASSWORD = cfg["db_password"]
-API_TOKEN = cfg["api_token"]
+# Лаконичный 500-ответ, подробности только в логах
+logging.basicConfig(level=logging.INFO)
+
+@app.errorhandler(Exception)
+def handle_any_error(e):
+    app.logger.exception("Unhandled exception")
+    return jsonify({"error": "Internal server error"}), 500
 
 @app.get("/")
 def index():
@@ -21,20 +28,21 @@ def index():
 
 @app.get("/cause_error")
 def cause_error():
-    # Намеренная ошибка для показа подробного стека
-    return 1 / 0  # ZeroDivisionError -> подробный стек в браузере
+    # Оставляем для проверки обработчика ошибок
+    return 1 / 0
 
-# 3) Небезопасная десериализация через pickle
+# Безопасная «десериализация»: JSON + валидация
 @app.post("/deser")
 def deser():
-    """
-    Ожидает в теле запроса base64-представление байтов pickle.
-    Пример: curl -X POST localhost:5000/deser --data "$(python make_payload.py)"
-    """
-    data_b64 = request.get_data() or request.form.get("data", "")
-    raw = base64.b64decode(data_b64)
-    obj = pickle.loads(raw)  # УЯЗВИМО: произвольный код может выполняться при загрузке!
-    return jsonify({"type": str(type(obj)), "repr": repr(obj)})
+    try:
+        payload = request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "Bad JSON"}), 400
+
+    if not isinstance(payload, dict) or "role" not in payload:
+        return jsonify({"error": "Invalid payload"}), 400
+
+    return jsonify({"ok": True, "role": payload["role"]})
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000)
